@@ -5,7 +5,9 @@ from time import sleep, time, strftime, localtime
 import readchar
 from os import geteuid, getlogin, path, environ
 from google_speech import Speech
+import threading
 
+# Check if the OS is Raspberry Pi by checking nodename
 is_os_raspbery = os.uname().nodename == "raspberrypi"
 
 if is_os_raspbery:
@@ -94,31 +96,19 @@ def take_photo():
     Vilib.take_photo(name, photo_path)
     print("\nphoto save as %s%s.jpg" % (photo_path, name))
 
-def smooth_turn(direction, angle_step=5, max_angle=30, delay=0.05):
-    # Sanity checks for direction
-    if direction not in ["left", "right"]:
-        return
+def smooth_acceleration(current_speed, target_speed, step=5):
+    if current_speed < target_speed:
+        return min(current_speed + step, target_speed)
+    elif current_speed > target_speed:
+        return max(current_speed - step, target_speed)
+    return current_speed
 
-    for angle in range(0, max_angle + 1, angle_step):
-        angle = angle if direction == "right" else -angle
-        px.set_dir_servo_angle(angle)
-        sleep(delay)
-
-def move_forward_backward(operation, speed):
-    if operation == "stop":
-        px.stop()
-    elif operation == "forward":
-        px.forward(speed)
-    elif operation == "backward":
-        px.backward(speed)
-
-def handle_steering(key):
-    if key == "a":
-        smooth_turn("left")
-    elif key == "d":
-        smooth_turn("right")
-    else:
-        px.set_dir_servo_angle(0)  # Center the steering
+def handle_steering(current_angle, target_angle, step=5):
+    if current_angle < target_angle:
+        return min(current_angle + step, target_angle)
+    elif current_angle > target_angle:
+        return max(current_angle - step, target_angle)
+    return current_angle
 
 def play_music(track_path: str):
     if not path.exists(track_path):
@@ -138,10 +128,13 @@ def play_sound(sound_path: str):
 
 def main():
     speed = 0
+    target_speed = 0
     status = "stop"
     flag_bgm = False
     cam_tilt_angle = 0  # Initialize the camera tilt angle
     cam_pan_angle = 0  # Initialize the camera pan angle
+    steering_angle = 0   # Initialize the steering angle
+    target_steering_angle = 0
     music.music_set_volume(100)
 
     Vilib.camera_start(vflip=False, hflip=False)
@@ -152,104 +145,114 @@ def main():
     # Get paths from environment variables
     music_path = environ.get('MUSIC_PATH', "../musics/robomusic.mp3")
     sound_path = environ.get('SOUND_PATH', "../sounds/directives.wav")
-    while True:
-        print("\rstatus: %s , speed: %s    " % (status, speed), end="", flush=True)
-        # readkey
-        key = readchar.readkey()
 
-        if key in (
-            "w",
-            "a",
-            "s",
-            "d",
-            "-",
-            "=",
-            " ",
-            readchar.key.UP,
-            readchar.key.DOWN,
-            readchar.key.LEFT,
-            readchar.key.RIGHT,
-        ):
-            # throttle
-            if key == "=":  # speed up
-                if speed <= 90:
-                    speed += 10
-            elif key == "-":  # speed down
-                if speed >= 10:
-                    speed -= 10
-                if speed == 0:
-                    status = "stop"
-            # direction
-            elif key in ("w", "s"):
-                if speed == 0:
-                    speed = 10
-                if key == "w":
-                    if status != "forward" and speed > 60:
-                        speed = 60
-                    status = "forward"
-                elif key == "s":
-                    if (
-                        status != "backward" and speed > 60
-                    ):  # Speed limit when reversing
-                        speed = 60
-                    status = "backward"
-            elif key in ("a", "d"):
-                handle_steering(key)
-            # stop
-            elif key == " ":
+    def control_loop():
+        prev_speed = -1
+        prev_steering_angle = -1
+        nonlocal speed, target_speed, steering_angle, target_steering_angle
+        while True:
+            speed = smooth_acceleration(speed, target_speed)
+            steering_angle = handle_steering(steering_angle, target_steering_angle)
+
+            # Update only if there's a change
+            if speed != prev_speed or steering_angle != prev_steering_angle:
+                if status == "forward":
+                    px.forward(speed)
+                elif status == "backward":
+                    px.backward(speed)
+                elif status == "stop":
+                    px.stop()
+
+                px.set_dir_servo_angle(steering_angle)
+
+                prev_speed = speed
+                prev_steering_angle = steering_angle
+
+            sleep(0.05)
+
+    control_thread = threading.Thread(target=control_loop)
+    control_thread.daemon = True  # This makes sure the thread exits when the main program does
+    control_thread.start()
+
+    while True:
+        key = readchar.readkey()
+        print("\rstatus: %s , speed: %s    " % (status, speed), end="", flush=True)
+
+        # Throttle and speed adjustments
+        if key == "=":  # speed up
+            if target_speed <= 90:
+                target_speed += 10
+        elif key == "-":  # speed down
+            if target_speed >= 10:
+                target_speed -= 10
+            if target_speed == 0:
                 status = "stop"
-            # camera control
-            elif key == readchar.key.UP:
-                cam_tilt_angle += 5
-                if cam_tilt_angle > 35:
-                    cam_tilt_angle = 35
-                px.set_cam_tilt_angle(cam_tilt_angle)
-            elif key == readchar.key.DOWN:
-                cam_tilt_angle -= 5
-                if cam_tilt_angle < -35:
-                    cam_tilt_angle = -35
-                px.set_cam_tilt_angle(cam_tilt_angle)
-            elif key == readchar.key.LEFT:
-                cam_pan_angle -= 5
-                if cam_pan_angle < -35:
-                    cam_pan_angle = -35
-                px.set_cam_pan_angle(cam_pan_angle)
-            elif key == readchar.key.RIGHT:
-                cam_pan_angle += 5
-                if cam_pan_angle > 35:
-                    cam_pan_angle = 35
-                px.set_cam_pan_angle(cam_pan_angle)
-            # move forward/backward
-            move_forward_backward(status, speed)
-        # take photo
+
+        # Movement and direction
+        elif key in ("w", "s"):
+            if target_speed == 0:
+                target_speed = 10
+            if key == "w":
+                if status != "forward" and target_speed > 60:
+                    target_speed = 60
+                status = "forward"
+            elif key == "s":
+                if status != "backward" and target_speed > 60:  # Speed limit when reversing
+                    target_speed = 60
+                status = "backward"
+        elif key == "a":
+            target_steering_angle = -30  # Update steering target
+        elif key == "d":
+            target_steering_angle = 30  # Update steering target
+        elif key == " ":
+            status = "stop"
+            target_speed = 0  # Decelerate to stop
+        elif key == readchar.key.UP:
+            cam_tilt_angle = min(35, cam_tilt_angle + 5)
+            px.set_cam_tilt_angle(cam_tilt_angle)
+        elif key == readchar.key.DOWN:
+            cam_tilt_angle = max(-35, cam_tilt_angle - 5)
+            px.set_cam_tilt_angle(cam_tilt_angle)
+        elif key == readchar.key.LEFT:
+            cam_pan_angle = max(-35, cam_pan_angle - 5)
+            px.set_cam_pan_angle(cam_pan_angle)
+        elif key == readchar.key.RIGHT:
+            cam_pan_angle = min(35, cam_pan_angle + 5)
+            px.set_cam_pan_angle(cam_pan_angle)
         elif key == "t":
             take_photo()
-        # play music
         elif key == "m":
             flag_bgm = not flag_bgm
             if flag_bgm:
                 print("Play Music")
-                print(f"Playing music: {music_path}")
                 play_music(music_path)
             else:
                 print("Stop Music")
                 music.music_stop()
-        # play sound effect
         elif key == "r":
             print(f"Playing sound: {sound_path}")
             play_sound(sound_path)
             sleep(0.05)
-            print("4: Classified")
-        # text to speech
+            text_to_speech("Classified")
         elif key == "k":
-            words = "Target identified."
-            text_to_speech(f"{words}")
-        # quit
+            text_to_speech("Target identified.")
         elif key == readchar.key.CTRL_C:
             print("\nquit ...")
             px.stop()
             Vilib.camera_close()
             break
+
+        # Ensuring it updates state efficiently
+        if status == "forward":
+            px.forward(target_speed)
+        elif status == "backward":
+            px.backward(target_speed)
+        elif status == "stop":
+            px.stop()
+
+        # Center the steering if no key is pressed
+        if key not in ("a", "d"):
+            target_steering_angle = 0
 
         sleep(0.05)  # Reduced sleep time for better responsiveness
 
@@ -257,7 +260,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"error:{e}")
+        print(f"error: {e}")
     finally:
         px.stop()
         Vilib.camera_close()
