@@ -10,6 +10,7 @@ import os
 is_os_raspbery = os.uname().nodename == "raspberrypi"
 
 if is_os_raspbery:
+    print("OS is raspberrypi")
     from picarx import Picarx
     from vilib import Vilib
     from robot_hat.utils import reset_mcu
@@ -74,6 +75,14 @@ print(manual)
 px = Picarx()
 music = Music()
 
+def text_to_speech(words):
+    try:
+        print(f"Playing text-to-speech for: {words}")
+        speech = Speech(words, "en")
+        speech.play()
+    except Exception as e:
+        print(f"Error playing text-to-speech audio: {e}")
+
 if geteuid() != 0 and is_os_raspbery:
     print(
         f"\033[0;33m{'The program needs to be run using sudo, otherwise there may be no sound.'}\033[0m"
@@ -108,12 +117,12 @@ def move(operate: str, speed):
             px.backward(speed)
         elif operate == "turn left":
             px.set_dir_servo_angle(-30)
-            px.forward(speed)
+            # px.forward(speed)
         elif operate == "turn right":
             px.set_dir_servo_angle(30)
-            px.forward(speed)
+            # px.forward(speed)
 
-def play_music(track_path):
+def play_music(track_path: str):
     if not path.exists(track_path):
         text = f'The music file {track_path} is missing.'
         speech = Speech(text, "en")
@@ -121,7 +130,7 @@ def play_music(track_path):
     else:
         music.music_play(track_path)
 
-def play_sound(sound_path):
+def play_sound(sound_path: str):
     if not path.exists(sound_path):
         text = f'The sound file {sound_path} is missing.'
         speech = Speech(text, "en")
@@ -145,7 +154,6 @@ def main():
     # Get paths from environment variables
     music_path = environ.get('MUSIC_PATH', "../musics/robomusic.mp3")
     sound_path = environ.get('SOUND_PATH', "../sounds/directives.wav")
-
     while True:
         print("\rstatus: %s , speed: %s    " % (status, speed), end="", flush=True)
         # readkey
@@ -246,9 +254,7 @@ def main():
         # text to speech
         elif key == "k":
             words = "Target identified."
-            print(f"{words}")
-            speech = Speech(words, "en")
-            speech.play()
+            text_to_speech(f"{words}")
         # quit
         elif key == readchar.key.CTRL_C:
             print("\nquit ...")
