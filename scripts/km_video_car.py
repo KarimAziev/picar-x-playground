@@ -5,7 +5,6 @@ from time import sleep, time, strftime, localtime
 import readchar
 from os import geteuid, getlogin, path, environ
 from google_speech import Speech
-import os
 
 is_os_raspbery = os.uname().nodename == "raspberrypi"
 
@@ -95,32 +94,38 @@ def take_photo():
     Vilib.take_photo(name, photo_path)
     print("\nphoto save as %s%s.jpg" % (photo_path, name))
 
-def j_turn(turn_direction, speed):
-    if turn_direction == "left":
-        px.set_dir_servo_angle(-60)
-    elif turn_direction == "right":
-        px.set_dir_servo_angle(60)
-    px.backward(speed)
-    sleep(2)  # Adjust the time to complete the J-turn
-    px.forward(speed)
-    px.set_dir_servo_angle(0)
-
-def move(operate: str, speed):
-    if operate == "stop":
-        px.stop()
+def smooth_turn(direction, angle_step=5, max_angle=30, delay=0.05):
+    current_angle = px.get_dir_servo_angle()
+    if direction == "left":
+        target_angle = -max_angle
+    elif direction == "right":
+        target_angle = max_angle
     else:
-        if operate == "forward":
-            px.set_dir_servo_angle(0)
-            px.forward(speed)
-        elif operate == "backward":
-            px.set_dir_servo_angle(0)
-            px.backward(speed)
-        elif operate == "turn left":
-            px.set_dir_servo_angle(-30)
-            # px.forward(speed)
-        elif operate == "turn right":
-            px.set_dir_servo_angle(30)
-            # px.forward(speed)
+        return  # No valid direction provided
+
+    while current_angle != target_angle:
+        if direction == "left":
+            current_angle = max(current_angle - angle_step, target_angle)
+        else:
+            current_angle = min(current_angle + angle_step, target_angle)
+        px.set_dir_servo_angle(current_angle)
+        sleep(delay)
+
+def move_forward_backward(operation, speed):
+    if operation == "stop":
+        px.stop()
+    elif operation == "forward":
+        px.forward(speed)
+    elif operation == "backward":
+        px.backward(speed)
+
+def handle_steering(key):
+    if key == "a":
+        smooth_turn("left")
+    elif key == "d":
+        smooth_turn("right")
+    else:
+        px.set_dir_servo_angle(0)  # Center the steering
 
 def play_music(track_path: str):
     if not path.exists(track_path):
@@ -182,30 +187,21 @@ def main():
                 if speed == 0:
                     status = "stop"
             # direction
-            elif key in ("w", "a", "s", "d"):
+            elif key in ("w", "s"):
                 if speed == 0:
                     speed = 10
                 if key == "w":
-                    # Speed limit when reversing, avoid instantaneous current too large
                     if status != "forward" and speed > 60:
                         speed = 60
                     status = "forward"
-                elif key == "a":
-                    if status == "backward":
-                        j_turn("left", speed)
-                    else:
-                        status = "turn left"
                 elif key == "s":
                     if (
                         status != "backward" and speed > 60
                     ):  # Speed limit when reversing
                         speed = 60
                     status = "backward"
-                elif key == "d":
-                    if status == "backward":
-                        j_turn("right", speed)
-                    else:
-                        status = "turn right"
+            elif key in ("a", "d"):
+                handle_steering(key)
             # stop
             elif key == " ":
                 status = "stop"
@@ -230,8 +226,8 @@ def main():
                 if cam_pan_angle > 35:
                     cam_pan_angle = 35
                 px.set_cam_pan_angle(cam_pan_angle)
-            # move
-            move(status, speed)
+            # move forward/backward
+            move_forward_backward(status, speed)
         # take photo
         elif key == "t":
             take_photo()
@@ -262,7 +258,7 @@ def main():
             Vilib.camera_close()
             break
 
-        sleep(0.1)
+        sleep(0.05)  # Reduced sleep time for better responsiveness
 
 if __name__ == "__main__":
     try:
