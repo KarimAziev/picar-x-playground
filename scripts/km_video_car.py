@@ -95,20 +95,13 @@ def take_photo():
     print("\nphoto save as %s%s.jpg" % (photo_path, name))
 
 def smooth_turn(direction, angle_step=5, max_angle=30, delay=0.05):
-    current_angle = px.get_dir_servo_angle()
-    if direction == "left":
-        target_angle = -max_angle
-    elif direction == "right":
-        target_angle = max_angle
-    else:
-        return  # No valid direction provided
+    # Sanity checks for direction
+    if direction not in ["left", "right"]:
+        return
 
-    while current_angle != target_angle:
-        if direction == "left":
-            current_angle = max(current_angle - angle_step, target_angle)
-        else:
-            current_angle = min(current_angle + angle_step, target_angle)
-        px.set_dir_servo_angle(current_angle)
+    for angle in range(0, max_angle + 1, angle_step):
+        angle = angle if direction == "right" else -angle
+        px.set_dir_servo_angle(angle)
         sleep(delay)
 
 def move_forward_backward(operation, speed):
