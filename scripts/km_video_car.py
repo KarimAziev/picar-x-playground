@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import os
-from time import sleep, time, strftime, localtime
+from time import sleep, strftime, localtime, time as t
 import readchar
 from os import geteuid, getlogin, path, environ
 from google_speech import Speech
@@ -90,7 +90,7 @@ if geteuid() != 0 and is_os_raspbery:
     )
 
 def take_photo():
-    _time = strftime("%Y-%m-%d-%H-%M-%S", localtime(time()))
+    _time = strftime("%Y-%m-%d-%H-%M-%S", localtime(t()))
     name = "photo_%s" % _time
     photo_path = f"{user_home}/Pictures/picar-x/"
     Vilib.take_photo(name, photo_path)
@@ -101,6 +101,14 @@ def smooth_acceleration(current_speed, target_speed, step=5):
         return min(current_speed + step, target_speed)
     elif current_speed > target_speed:
         return max(current_speed - step, target_speed)
+    return current_speed
+
+def handle_deceleration(current_speed, step=5):
+    print(f"handle_deceleration {current_speed}")
+    if current_speed > 0:
+        return max(0, current_speed - step)
+    elif current_speed < 0:
+        return min(0, current_speed + step)
     return current_speed
 
 def handle_steering(current_angle, target_angle, step=5):
@@ -131,10 +139,11 @@ def main():
     target_speed = 0
     status = "stop"
     flag_bgm = False
-    cam_tilt_angle = 0  # Initialize the camera tilt angle
-    cam_pan_angle = 0  # Initialize the camera pan angle
-    steering_angle = 0   # Initialize the steering angle
+    cam_tilt_angle = 0
+    cam_pan_angle = 0
+    steering_angle = 0
     target_steering_angle = 0
+    moving = False
     music.music_set_volume(100)
 
     Vilib.camera_start(vflip=False, hflip=False)
@@ -146,15 +155,40 @@ def main():
     music_path = environ.get('MUSIC_PATH', "../musics/robomusic.mp3")
     sound_path = environ.get('SOUND_PATH', "../sounds/directives.wav")
 
+    deceleration_timer = None
+
+    def start_deceleration_timer():
+        nonlocal deceleration_timer
+
+        # Function to initiate deceleration
+        def decelerate():
+            nonlocal target_speed, moving
+            target_speed = 0
+            moving = False
+            print("[TIMER] Timer expired, starting deceleration.")
+
+        # Cancel any existing timer
+        if deceleration_timer:
+            deceleration_timer.cancel()
+
+        # Start a new timer
+        deceleration_timer = threading.Timer(0.5, decelerate)  # 0.5 seconds
+        deceleration_timer.start()
+        print("[TIMER] Timer started/reset")
+
     def control_loop():
         prev_speed = -1
         prev_steering_angle = -1
-        nonlocal speed, target_speed, steering_angle, target_steering_angle
+        nonlocal speed, target_speed, steering_angle, target_steering_angle, status, moving
         while True:
-            speed = smooth_acceleration(speed, target_speed)
+            print(f"[CONTROL_LOOP] moving: {moving} target_speed: {target_speed}, current_speed: {speed}, status: {status}")
+            if moving:
+                speed = smooth_acceleration(speed, target_speed)
+            else:
+                speed = handle_deceleration(speed)
+
             steering_angle = handle_steering(steering_angle, target_steering_angle)
 
-            # Update only if there's a change
             if speed != prev_speed or steering_angle != prev_steering_angle:
                 if status == "forward":
                     px.forward(speed)
@@ -168,45 +202,54 @@ def main():
                 prev_speed = speed
                 prev_steering_angle = steering_angle
 
+            if speed == 0 and not moving:
+                status = "stop"
+
             sleep(0.05)
 
     control_thread = threading.Thread(target=control_loop)
-    control_thread.daemon = True  # This makes sure the thread exits when the main program does
+    control_thread.daemon = True  # Ensures the thread exits with the main program
     control_thread.start()
 
     while True:
         key = readchar.readkey()
-        print("\rstatus: %s , speed: %s    " % (status, speed), end="", flush=True)
+        print(f"[KEY_PRESS] Key: {key}")
+        print(f"\rstatus: {status} , speed: {speed}    ", end="", flush=True)
 
-        # Throttle and speed adjustments
-        if key == "=":  # speed up
+        if key == readchar.key.CTRL_C:
+            print("\nquit ...")
+            px.stop()
+            Vilib.camera_close()
+            break
+
+        # Speed adjustments
+        elif key == "=":
             if target_speed <= 90:
                 target_speed += 10
-        elif key == "-":  # speed down
+        elif key == "-":
             if target_speed >= 10:
                 target_speed -= 10
             if target_speed == 0:
                 status = "stop"
 
         # Movement and direction
-        elif key in ("w", "s"):
-            if target_speed == 0:
-                target_speed = 10
-            if key == "w":
-                if status != "forward" and target_speed > 60:
-                    target_speed = 60
-                status = "forward"
-            elif key == "s":
-                if status != "backward" and target_speed > 60:  # Speed limit when reversing
-                    target_speed = 60
-                status = "backward"
+        elif key == "w":
+            status = "forward"
+            target_speed = 60
+            moving = True
+            start_deceleration_timer()  # Reset timer on key press
+        elif key == "s":
+            status = "backward"
+            target_speed = 60
+            moving = True
+            start_deceleration_timer()  # Reset timer on key press
         elif key == "a":
-            target_steering_angle = -30  # Update steering target
+            target_steering_angle = -30
         elif key == "d":
-            target_steering_angle = 30  # Update steering target
+            target_steering_angle = 30
         elif key == " ":
             status = "stop"
-            target_speed = 0  # Decelerate to stop
+            target_speed = 0
         elif key == readchar.key.UP:
             cam_tilt_angle = min(35, cam_tilt_angle + 5)
             px.set_cam_tilt_angle(cam_tilt_angle)
@@ -236,23 +279,16 @@ def main():
             text_to_speech("Classified")
         elif key == "k":
             text_to_speech("Target identified.")
-        elif key == readchar.key.CTRL_C:
-            print("\nquit ...")
-            px.stop()
-            Vilib.camera_close()
-            break
-
-        # Ensuring it updates state efficiently
-        if status == "forward":
-            px.forward(target_speed)
-        elif status == "backward":
-            px.backward(target_speed)
-        elif status == "stop":
-            px.stop()
 
         # Center the steering if no key is pressed
         if key not in ("a", "d"):
             target_steering_angle = 0
+
+        # Start deceleration timer if no movement key is pressed
+        if key not in ("w", "s"):
+            start_deceleration_timer()
+
+        print(f"[POST_KEY] target_speed: {target_speed}, status: {status}")
 
         sleep(0.05)  # Reduced sleep time for better responsiveness
 
