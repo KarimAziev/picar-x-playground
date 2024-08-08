@@ -1,0 +1,5 @@
+#+OPTIONS: ^:nil tags:nil num:nil
+
+* About
+
+A playground repository featuring custom scripts for enhancing and experimenting with the functionalities of the PiCar-X robot.
